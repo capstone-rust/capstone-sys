@@ -26,6 +26,7 @@ Low-level, unsafe Rust bindings for the [`capstone`][capstone] disassembly libra
     - Requires that `capstone` is already installed on the system
     - Eliminates the default step of compiling `capstone`
 * `build_capstone_cmake`: if using the bundled `capstone` library, then build `capstone` using `cmake`.
+    - On Windows platforms, `capstone` is always built with `cmake`
 * `use_bindgen`: instead of using the pre-generated capstone bindings, dynamically generate bindings with [`bindgen`][bindgen].
 
 [bindgen]: https://github.com/rust-lang-nursery/rust-bindgen

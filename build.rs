@@ -9,10 +9,9 @@ extern crate bindgen;
 #[cfg(feature = "use_system_capstone")]
 extern crate pkg_config;
 
-#[cfg(feature = "build_capstone_cmake")]
+#[cfg(any(feature = "build_capstone_cmake", windows))]
 extern crate cmake;
 
-#[cfg(feature = "use_bindgen")]
 use std::fs::copy;
 use std::path::PathBuf;
 use std::process::Command;
@@ -23,16 +22,45 @@ include!("common.rs");
 
 /// Indicates how capstone library should be linked
 #[allow(dead_code)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 enum LinkType {
     Dynamic,
     Static,
 }
 
+impl LinkType {
+    /// File extension for libraries for the target system
+    fn lib_extension(self) -> &'static str {
+        let target = env::var("TARGET").unwrap();
+        if target.contains("windows-msvc") {
+            // Windows
+            match self {
+                LinkType::Dynamic => "dll",
+                LinkType::Static => "lib",
+            }
+        } else if target.contains("apple") {
+            // Mac OS
+            match self {
+                LinkType::Dynamic => "dylib",
+                LinkType::Static => "a",
+            }
+        } else {
+            // Unix like
+            match self {
+                LinkType::Dynamic => "so",
+                LinkType::Static => "a",
+            }
+        }
+    }
+}
+
 /// Build capstone with cmake
-#[cfg(feature = "build_capstone_cmake")]
+#[cfg(any(feature = "build_capstone_cmake", windows))]
 fn cmake() {
     let mut cfg = cmake::Config::new("capstone");
     let dst = cfg.build();
+
+    // The `cmake` crate builds capstone from the OUT directory automatically
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
 }
 
@@ -101,7 +129,7 @@ fn write_bindgen_bindings(header_search_paths: &Vec<PathBuf>, update_pregenerate
 fn find_system_capstone(header_search_paths: &mut Vec<PathBuf>) -> Option<LinkType> {
     assert!(
         !cfg!(feature = "build_capstone_cmake"),
-        "build_capstone_cmake feature is only valid when using bundled cmake"
+        "build_capstone_cmake feature is only valid when building bundled capstone"
     );
 
     let capstone_lib =
@@ -123,26 +151,28 @@ fn main() {
             link_type = find_system_capstone(&mut header_search_paths);
         }
     } else {
-        if cfg!(feature = "build_capstone_cmake") {
-            #[cfg(feature = "build_capstone_cmake")]
+        link_type = Some(LinkType::Static);
+        if cfg!(feature = "build_capstone_cmake") || cfg!(windows) {
+            #[cfg(any(feature = "build_capstone_cmake", windows))]
             cmake();
         } else {
-            //let target = env::var("TARGET").unwrap();
-            //let windows = target.contains("windows");
-            // TODO: need to add this argument for windows 64-bit, msvc, dunno, read
-            // COMPILE_MSVC.txt file cygwin-mingw64
-            let out_dir = env::var("OUT_DIR").unwrap();
-            let _ = Command::new("./make.sh").current_dir("capstone").status();
-            let capstone = "libcapstone.a";
-            let _ = Command::new("cp")
+            let out_dir = env::var("OUT_DIR").expect("Cannot find OUT_DIR");
+            Command::new("./make.sh")
                 .current_dir("capstone")
-                .arg(&capstone)
-                .arg(&out_dir)
-                .status();
+                .status()
+                .expect("Failed to build bundled capstone library");
+            let capstone_lib = format!("libcapstone.{}", link_type.unwrap().lib_extension());
+            let out_dir_dst: PathBuf = [&out_dir, &capstone_lib].iter().collect();
+            let capstone_lib_path: PathBuf = [
+                &env::var("CARGO_MANIFEST_DIR").unwrap(),
+                "capstone",
+                &capstone_lib,
+            ].iter()
+                .collect();
+            copy(&capstone_lib_path, &out_dir_dst).expect("Failed to copy capstone lib to OUT_DIR");
             println!("cargo:rustc-link-search=native={}", out_dir);
         }
         header_search_paths.push(PathBuf::from("capstone/include"));
-        link_type = Some(LinkType::Static);
     }
 
     match link_type.expect("Must specify link type") {
