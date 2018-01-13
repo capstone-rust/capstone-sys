@@ -12,9 +12,11 @@ extern crate pkg_config;
 #[cfg(feature = "build_capstone_cmake")]
 extern crate cmake;
 
+#[cfg(windows)]
+extern crate gcc;
+
 use std::fs::copy;
 use std::path::PathBuf;
-use std::process::Command;
 use std::env;
 
 include!("common.rs");
@@ -119,44 +121,123 @@ fn main() {
 
     // C header search paths
     let mut header_search_paths: Vec<PathBuf> = Vec::new();
-    let target_os = env_var("CARGO_CFG_TARGET_OS");
 
     if cfg!(feature = "use_system_capstone") {
+        #[cfg(windows)] panic!("Feature 'use_system_capstone' is not supported on Windows");
         #[cfg(feature = "use_system_capstone")]
         {
             link_type = find_system_capstone(&mut header_search_paths);
         }
     } else {
         if cfg!(feature = "build_capstone_cmake") {
+            #[cfg(windows)] panic!("Feature 'build_capstone_cmake' is not supported on Windows");
             #[cfg(feature = "build_capstone_cmake")] cmake();
         } else {
-            // TODO: need to add this argument for windows 64-bit, msvc, dunno, read
-            // COMPILE_MSVC.txt file cygwin-mingw64
+            #[cfg(windows)]
+            {
+                let use_static_crt = {
+                    let target_features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or(String::new());
+                    target_features.split(",").any(|f| f == "crt-static")
+                };
 
-            // In BSDs, `make` does not refer to GNU make
-            let make_cmd = if target_os.contains("bsd") || target_os == "dragonfly" {
-                "gmake"
-            } else {
-                "make"
-            };
+                let files = [
+                    "arch/AArch64/AArch64BaseInfo.c",
+                    "arch/AArch64/AArch64Disassembler.c",
+                    "arch/AArch64/AArch64InstPrinter.c",
+                    "arch/AArch64/AArch64Mapping.c",
+                    "arch/AArch64/AArch64Module.c",
+                    "arch/ARM/ARMDisassembler.c",
+                    "arch/ARM/ARMInstPrinter.c",
+                    "arch/ARM/ARMMapping.c",
+                    "arch/ARM/ARMModule.c",
+                    "cs.c",
+                    "MCInst.c",
+                    "MCInstrDesc.c",
+                    "MCRegisterInfo.c",
+                    "arch/Mips/MipsDisassembler.c",
+                    "arch/Mips/MipsInstPrinter.c",
+                    "arch/Mips/MipsMapping.c",
+                    "arch/Mips/MipsModule.c",
+                    "arch/PowerPC/PPCDisassembler.c",
+                    "arch/PowerPC/PPCInstPrinter.c",
+                    "arch/PowerPC/PPCMapping.c",
+                    "arch/PowerPC/PPCModule.c",
+                    "arch/Sparc/SparcDisassembler.c",
+                    "arch/Sparc/SparcInstPrinter.c",
+                    "arch/Sparc/SparcMapping.c",
+                    "arch/Sparc/SparcModule.c",
+                    "SStream.c",
+                    "arch/SystemZ/SystemZDisassembler.c",
+                    "arch/SystemZ/SystemZInstPrinter.c",
+                    "arch/SystemZ/SystemZMapping.c",
+                    "arch/SystemZ/SystemZMCTargetDesc.c",
+                    "arch/SystemZ/SystemZModule.c",
+                    "utils.c",
+                    "arch/X86/X86ATTInstPrinter.c",
+                    "arch/X86/X86Disassembler.c",
+                    "arch/X86/X86DisassemblerDecoder.c",
+                    "arch/X86/X86IntelInstPrinter.c",
+                    "arch/X86/X86Mapping.c",
+                    "arch/X86/X86Module.c",
+                    "arch/XCore/XCoreDisassembler.c",
+                    "arch/XCore/XCoreInstPrinter.c",
+                    "arch/XCore/XCoreMapping.c",
+                    "arch/XCore/XCoreModule.c",
+                ];
 
-            let out_dir = env_var("OUT_DIR");
-            Command::new(make_cmd)
-                .current_dir(CAPSTONE_DIR)
-                .status()
-                .expect("Failed to build Capstone library");
-            let capstone = "libcapstone.a";
-            Command::new("cp")
-                .current_dir(CAPSTONE_DIR)
-                .arg(&capstone)
-                .arg(&out_dir)
-                .status()
-                .expect("Failed to copy capstone library to OUT_DIR");
+                gcc::Build::new()
+                    .files(files.into_iter().map(|f| format!("{}/{}", CAPSTONE_DIR, f)))
+                    .include("capstone/include")
+                    .define("CAPSTONE_X86_ATT_DISABLE_NO", None)
+                    .define("CAPSTONE_DIET_NO", None)
+                    .define("CAPSTONE_X86_REDUCE_NO", None)
+                    .define("CAPSTONE_HAS_ARM", None)
+                    .define("CAPSTONE_HAS_ARM64", None)
+                    .define("CAPSTONE_HAS_MIPS", None)
+                    .define("CAPSTONE_HAS_POWERPC", None)
+                    .define("CAPSTONE_HAS_SPARC", None)
+                    .define("CAPSTONE_HAS_SYSZ", None)
+                    .define("CAPSTONE_HAS_X86", None)
+                    .define("CAPSTONE_HAS_XCORE", None)
+                    .define("CAPSTONE_USE_SYS_DYN_MEM", None)
+                    .flag_if_supported("-Wno-unused-function")
+                    .flag_if_supported("-Wno-unused-parameter")
+                    .flag_if_supported("-Wno-unknown-pragmas")
+                    .flag_if_supported("-Wno-sign-compare")
+                    .static_crt(use_static_crt)
+                    .compile("capstone");
+            }
 
-            println!("cargo:rustc-link-search=native={}", out_dir);
+            #[cfg(not(windows))]
+            {
+                use std::process::Command;
+                
+                // In BSDs, `make` does not refer to GNU make
+                let target_os = env_var("CARGO_CFG_TARGET_OS");                
+                let make_cmd = if target_os.contains("bsd") || target_os == "dragonfly" {
+                    "gmake"
+                } else {
+                    "make"
+                };
+
+                let out_dir = env_var("OUT_DIR");
+                Command::new(make_cmd)
+                    .current_dir(CAPSTONE_DIR)
+                    .status()
+                    .expect("Failed to build Capstone library");
+                let capstone = "libcapstone.a";
+                Command::new("cp")
+                    .current_dir(CAPSTONE_DIR)
+                    .arg(&capstone)
+                    .arg(&out_dir)
+                    .status()
+                    .expect("Failed to copy capstone library to OUT_DIR");
+
+                println!("cargo:rustc-link-search=native={}", out_dir);
+            }
         }
         header_search_paths.push(PathBuf::from("capstone/include"));
-        link_type = Some(LinkType::Static);
+        link_type = Some(LinkType::Static);        
     }
 
     match link_type.expect("Must specify link type") {
